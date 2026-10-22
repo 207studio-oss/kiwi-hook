@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""Kiwi Hook sender. Posts one small JSON event to your bot's webhook.
+
+Usage: kiwi-hook-send <agent> [event]    (hook JSON may arrive on stdin or as argv[-1])
+Reads KIWI_HOOK_URL and KIWI_HOOK_KEY from env, else ~/.kiwi-hook.env (chmod 600).
+No URL means it does nothing. It always exits 0, so your agent never waits on it.
+"""
+import json, os, socket, sys, time, urllib.request
+from pathlib import Path
+
+def cfg():
+    vals = {}
+    p = Path.home() / ".kiwi-hook.env"
+    if p.exists():
+        for line in p.read_text().splitlines():
+            if "=" in line and not line.strip().startswith("#"):
+                k, v = line.split("=", 1)
+                vals[k.strip()] = v.strip().strip("'\"")
+    for k in ("KIWI_HOOK_URL", "KIWI_HOOK_KEY"):
+        if os.environ.get(k):
+            vals[k] = os.environ[k]
+    return vals
+
+def main():
+    agent = sys.argv[1] if len(sys.argv) > 1 else "agent"
+    event = sys.argv[2] if len(sys.argv) > 2 and not sys.argv[2].startswith("{") else "turn-end"
+    data = {}
+    raw = sys.argv[-1] if sys.argv[-1].startswith("{") else ("" if sys.stdin.isatty() else sys.stdin.read(1 << 20))
+    try:
+        data = json.loads(raw or "{}")
+    except ValueError:
+        pass
+    summary = data.get("last_assistant_message") or data.get("last-assistant-message") or ""
+    body = {"agent": agent, "event": event, "session": str(data.get("session_id") or data.get("thread-id") or ""),
+            "machine": socket.gethostname().split(".")[0], "cwd": data.get("cwd") or os.getcwd(),
+            "summary": " ".join(str(summary).split())[:600], "at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+    c = cfg()
+    if not c.get("KIWI_HOOK_URL"):
+        return
+    headers = {"content-type": "application/json"}
+    if c.get("KIWI_HOOK_KEY"):
+        k = c["KIWI_HOOK_KEY"]
+        headers["authorization"] = k if " " in k else "Bearer " + k
+    try:
+        urllib.request.urlopen(urllib.request.Request(c["KIWI_HOOK_URL"], json.dumps(body).encode(), headers), timeout=5)
+    except Exception:
+        pass
+
+if __name__ == "__main__":
+    try:
+        main()
+    finally:
+        sys.exit(0)
